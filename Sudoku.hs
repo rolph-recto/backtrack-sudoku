@@ -9,10 +9,9 @@ import Control.Monad.State
 import Control.Monad.Trans.Either
 
 import Data.Maybe (catMaybes)
-import qualified Data.Map.Strict as M
 import Text.Read (readMaybe)
-
-import Debug.Trace (trace)
+import qualified Data.Map.Strict as M
+import qualified Data.List as L
 
 type Coord = (Int,Int)
 type Board = [(Coord,Int)]
@@ -42,12 +41,14 @@ box b (x,y) =
         xgood x' = x' >= xmin && x' <= xmax
         ygood y' = y' >= ymin && y' <= ymax
 
--- propagate constraints in solution
+
 -- get current values in row, col and box of cell
 -- and filter these out as possible values for a cell
-propagateConstraints :: State SudokuState ()
-propagateConstraints = do
+eliminatePossibleVals :: State SudokuState ()
+eliminatePossibleVals = do
   (board, holes, sol) <- get
+
+  -- eliminate possible values
   holes' <- forM holes $ \((x,y),vals) -> do
     let rowVals = map snd $ row board (x,y)
     let colVals = map snd $ col board (x,y)
@@ -55,8 +56,35 @@ propagateConstraints = do
     let badVals = rowVals ++ colVals ++ boxVals
     let vals' = filter (not . flip elem badVals) vals
     return ((x,y), vals')
-  
+
   put (board, holes', sol)
+
+-- if a hole has only one possible value,
+-- add it to the solution
+eliminateUnitaryHoles :: State SudokuState ()
+eliminateUnitaryHoles = do
+  (board, holes, sol) <- get
+  let holes' = filter (\(_,vals) -> length vals > 1) holes
+  let newSol = map (\(c,[x]) -> (c,x)) $ filter isUnitaryHole holes
+  let sol' = foldr (:) sol newSol
+  let board' = foldr (:) board newSol
+  put (board', holes', sol')
+
+  where isUnitaryHole (_, vals) = length vals == 1
+
+-- aggressively propagate constraints
+-- until we reach a steady state
+propagateConstraints :: State SudokuState ()
+propagateConstraints = do
+  (_, holes, _) <- get
+  eliminatePossibleVals
+  eliminateUnitaryHoles
+  (_, holes', _) <- get
+
+  if holes == holes'
+  then return ()
+  else propagateConstraints
+  
 
 addSolution :: Coord -> Int ->  State SudokuState ()
 addSolution (x,y) val = do
@@ -72,11 +100,15 @@ solveBoard = do
   (board, holes, sol) <- ask :: Reader SudokuState SudokuState
   case holes of
     [] -> return (Just sol)
-    ((x,y),vals):hs -> do
+    otherwise -> do
       -- no possible solution if a hole has no possible value
       if any impossible holes
       then return Nothing
       else do
+        -- pick hole with minimum possible vals
+        -- this increases our chances of finding a solution faster
+        let h@((x,y),vals) = L.minimumBy minPossibleVals holes
+        let hs = L.delete h holes
         -- loop until solution is found
         rval' <- runEitherT $ forM vals $ \val -> do
           rval <- lift $ local (newState hs (x,y) val) solveBoard
@@ -88,7 +120,8 @@ solveBoard = do
           Left rsol'  -> return (Just rsol')
           Right _     -> return Nothing
 
-  where impossible (_,[]) = True
+  where minPossibleVals (_,v) (_,v') = compare (length v) (length v')
+        impossible (_,[]) = True
         impossible _      = False
         newState h' (x,y) val = pc (x,y) val . updateHoles h'
         updateHoles h' (b,h,s) = (b,h',s)
@@ -169,7 +202,7 @@ board1 = [[0,0,2,0,9,1,8,7,0],
           [0,0,0,2,0,3,5,4,8],
           [7,0,6,0,5,0,0,3,1],
           [0,8,3,0,4,0,0,5,2],
-          [0,0,4,0,0,6,0,8,0]]
+          [5,0,4,0,0,6,0,8,0]]
 
 main = do
   hSetBuffering stdout NoBuffering
